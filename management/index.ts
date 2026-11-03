@@ -137,6 +137,22 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
             }),
         )
 
+        app.get(
+            '/bridge/:deviceId/modeljson',
+            asyncHandler(async (req, res) => {
+                try {
+                    const { modelName, modelJson } = await bridge.getModelJson(req.params.deviceId)
+                    // the model name comes from the device, don't let it break out of the header
+                    const fileName = modelName.replace(/[^A-Za-z0-9._-]/g, '_') || 'model'
+                    res.setHeader('Content-Type', 'application/json')
+                    res.setHeader('Content-Disposition', `attachment; filename="${fileName}.json"`)
+                    res.end(modelJson)
+                } catch (err) {
+                    res.status(500).end(`${err}`)
+                }
+            }),
+        )
+
         app.post(
             '/bridge/:deviceId/enable',
             asyncHandler(async (req, res) => {
@@ -266,7 +282,13 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
         }, next)
     })
 
-    // static pages
+    // static pages. The panel is three small files that change with every server update, and a
+    // browser left holding the previous panel.js renders new data with old code (device names
+    // silently missing, for one real example) - so never let them be cached.
+    app.use((req, res, next) => {
+        if (/\.(html|js)$/.test(req.path)) res.setHeader('Cache-Control', 'no-cache')
+        next()
+    })
     app.use(WebSocketExpress.static(currentDir + '/../html', { extensions: ['html'] }))
     return app.createServer()
 }
