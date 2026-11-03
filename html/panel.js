@@ -96,6 +96,26 @@ class DeviceEntry {
             certDiv.title = 'No client certificate was presented on this connection'
         }
         td.appendChild(certDiv)
+        // Certificate detail in the owner's terms: who issued each side's certificate and
+        // whether it is genuinely LG's. The device side is LG-issued unless this server
+        // adopted the device; the server side always carries an LG name but is minted by
+        // our own CA, so it is never LG's.
+        if (this.remoteState.peerCert) {
+            const devCertDiv = document.createElement('div')
+            devCertDiv.style = 'font-size: 0.75em; opacity: 0.75'
+            devCertDiv.innerText = this.remoteState.peerCert.ours
+                ? '기기 인증서: 이 서버 발급 (가짜)'
+                : '기기 인증서: LG 발급 (진짜)'
+            devCertDiv.title = `Issued by ${this.remoteState.peerCert.issuer}`
+            td.appendChild(devCertDiv)
+        }
+        if (this.remoteState.serverCert) {
+            const srvCertDiv = document.createElement('div')
+            srvCertDiv.style = 'font-size: 0.75em; opacity: 0.75'
+            srvCertDiv.innerText = '서버 인증서: 이 서버 발급 (가짜)'
+            srvCertDiv.title = `Served as ${this.remoteState.serverCert.name}, issued by ${this.remoteState.serverCert.issuer}`
+            td.appendChild(srvCertDiv)
+        }
         children.push(td)
 
         td = document.createElement('td')

@@ -7,7 +7,12 @@ import { Client, PublishPacket, type Broker } from '../mqtt-broker'
 import { ClipDeployMessage, ClipMessage } from './clip'
 
 import log from '@/util/logging'
-import { peerCertificateInfo, type PeerCertInfo } from '@/util/peer-cert'
+import {
+    peerCertificateInfo,
+    serverCertificateInfo,
+    type PeerCertInfo,
+    type ServerCertInfo,
+} from '@/util/peer-cert'
 import { Metadata } from '../thinq'
 
 type DeviceEvents = {
@@ -26,6 +31,12 @@ export class Device extends TypedEmitter<DeviceEvents> {
      * LG-issued and only redirected here, undefined = no certificate seen.
      */
     peerCert: PeerCertInfo | undefined
+
+    /**
+     * The certificate this server presents to this device: the LG server name the device
+     * asked for (SNI), minted by this server's own CA - LG's identity by name only.
+     */
+    serverCert: ServerCertInfo | undefined
 
     constructor(
         readonly broker: Broker,
@@ -155,7 +166,9 @@ export class DeviceAcceptor extends TypedEmitter<DeviceAcceptorEvents> {
 
         const dev = new Device(this.broker, 'lime/devices/' + deviceId, deviceId, meta)
         if (this.caCertPem) {
-            dev.peerCert = peerCertificateInfo((client.mqtt as any)?.stream, this.caCertPem)
+            const stream = (client.mqtt as any)?.stream
+            dev.peerCert = peerCertificateInfo(stream, this.caCertPem)
+            dev.serverCert = serverCertificateInfo(stream, this.caCertPem)
             log(
                 'status',
                 deviceId,

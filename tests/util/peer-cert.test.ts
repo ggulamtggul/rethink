@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { X509Certificate } from 'node:crypto'
-import { classifyPeerCertificate, peerCertificateInfo } from '@/util/peer-cert'
+import {
+    classifyPeerCertificate,
+    peerCertificateInfo,
+    serverCertificateInfo,
+} from '@/util/peer-cert'
 
 // Fixtures in tests/fixtures/peer-cert: a test CA, a leaf it signed (what an adopted
 // appliance presents), and a self-signed certificate from another issuer (what an
@@ -46,5 +50,25 @@ describe('peerCertificateInfo', () => {
         const fakeSocket = { getPeerCertificate: () => ({ raw: leafRaw }) }
         const info = peerCertificateInfo(fakeSocket, caPem)
         assert.equal(info?.ours, true)
+    })
+})
+
+describe('serverCertificateInfo', () => {
+    test('the served name comes from the socket and the issuer is our own CA', () => {
+        const fakeSocket = { servername: 'common.iot.kic.lgthinq.com' }
+        const info = serverCertificateInfo(fakeSocket, caPem)
+        assert.equal(info?.name, 'common.iot.kic.lgthinq.com')
+        assert.match(info?.issuer ?? '', /Test Rethink CA/)
+    })
+
+    test('no requested name means nothing to report', () => {
+        assert.equal(serverCertificateInfo({}, caPem), undefined)
+        assert.equal(serverCertificateInfo(undefined, caPem), undefined)
+        assert.equal(serverCertificateInfo({ servername: '' }, caPem), undefined)
+    })
+
+    test('an unreadable CA classifies as unknown, not as an exception', () => {
+        const fakeSocket = { servername: 'kic-common.lgthinq.com' }
+        assert.equal(serverCertificateInfo(fakeSocket, 'not a pem'), undefined)
     })
 })
