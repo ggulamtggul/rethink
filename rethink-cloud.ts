@@ -171,11 +171,11 @@ function t2setup(manager: DeviceManager) {
         // Ask connecting appliances for their client certificate (never reject on it) so the
         // panel can show who issued it: us (adopted) or LG (redirected here). Appliances are
         // built for this - LG's own cloud authenticates them the same way.
-        tls.createServer({ ...tlsOptions, requestCert: true, rejectUnauthorized: false }, broker.accept.bind(broker)).listen(config.mqtts_port.bind)
+        tls.createServer({ ...tlsOptions }, broker.accept.bind(broker)).listen(config.mqtts_port.bind)
         net.createServer({}, broker.accept.bind(broker)).listen(config.mqtt_port.bind)
     }
 
-    const acceptor = new T2Acceptor(broker, ca.cert)
+    const acceptor = new T2Acceptor(broker)
     acceptor.on('newDevice', manager.accept.bind(manager))
 }
 

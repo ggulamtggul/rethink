@@ -88,13 +88,6 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
                 model: meta.modelId,
                 deviceType: meta.deviceType,
                 platform: dev.platform,
-                // Who issued the certificate the device presented on this connection:
-                // ours = adopted by this server, otherwise LG-issued (redirected here).
-                // Absent when no certificate was presented or the platform has none.
-                peerCert: 'peerCert' in dev ? dev.peerCert : undefined,
-                // The certificate this server presents to the device: an LG server name,
-                // minted by this server's own CA. Absent when not captured.
-                serverCert: 'serverCert' in dev ? dev.serverCert : undefined,
                 mapped: ha.haDevices.has(id),
                 bridged: bridge ? bridge.status(id) : false,
             }

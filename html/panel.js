@@ -83,35 +83,6 @@ class DeviceEntry {
         const platformDiv = document.createElement('div')
         platformDiv.innerText = this.remoteState.platform
         td.appendChild(platformDiv)
-        // Certificates, in the owner's terms: who issued each side's certificate and
-        // whether it is genuinely LG's. The device side is LG-issued unless this server
-        // adopted the device; the server side always carries an LG name but is minted by
-        // our own CA, so it is never LG's. (The old adopted/redirected badge duplicated
-        // the device line and was dropped at the owner's request.)
-        const certLine = (text, title) => {
-            const div = document.createElement('div')
-            div.style = 'font-size: 0.75em; opacity: 0.75'
-            div.innerText = text
-            div.title = title
-            td.appendChild(div)
-        }
-        if (this.remoteState.peerCert) {
-            certLine(
-                this.remoteState.peerCert.ours
-                    ? '기기 인증서: 이 서버 발급 (가짜)'
-                    : '기기 인증서: LG 발급 (진짜)',
-                `Issued by ${this.remoteState.peerCert.issuer}`,
-            )
-        }
-        if (this.remoteState.serverCert) {
-            certLine(
-                '서버 인증서: 이 서버 발급 (가짜)',
-                `Served as ${this.remoteState.serverCert.name}, issued by ${this.remoteState.serverCert.issuer}`,
-            )
-        }
-        if (!this.remoteState.peerCert && !this.remoteState.serverCert) {
-            certLine('인증서 정보 없음', 'No certificate was captured on this connection')
-        }
         children.push(td)
 
         td = document.createElement('td')

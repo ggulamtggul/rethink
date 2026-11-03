@@ -7,12 +7,6 @@ import { Client, PublishPacket, type Broker } from '../mqtt-broker'
 import { ClipDeployMessage, ClipMessage } from './clip'
 
 import log from '@/util/logging'
-import {
-    peerCertificateInfo,
-    serverCertificateInfo,
-    type PeerCertInfo,
-    type ServerCertInfo,
-} from '@/util/peer-cert'
 import { Metadata } from '../thinq'
 
 type DeviceEvents = {
@@ -24,19 +18,6 @@ type DeviceEvents = {
 export class Device extends TypedEmitter<DeviceEvents> {
     // this could be a stream but why bother...
     readonly platform = 'thinq2'
-
-    /**
-     * The client certificate this device presented on its current connection, classified
-     * against our CA (see util/peer-cert): ours = adopted by this server, not ours =
-     * LG-issued and only redirected here, undefined = no certificate seen.
-     */
-    peerCert: PeerCertInfo | undefined
-
-    /**
-     * The certificate this server presents to this device: the LG server name the device
-     * asked for (SNI), minted by this server's own CA - LG's identity by name only.
-     */
-    serverCert: ServerCertInfo | undefined
 
     constructor(
         readonly broker: Broker,
@@ -80,8 +61,6 @@ export class DeviceAcceptor extends TypedEmitter<DeviceAcceptorEvents> {
     clientsById: Record<string, Client> = {}
     constructor(
         readonly broker: Broker,
-        /** Our CA certificate (PEM), used to classify the certificates devices present. */
-        readonly caCertPem?: string,
     ) {
         super()
 
@@ -165,18 +144,6 @@ export class DeviceAcceptor extends TypedEmitter<DeviceAcceptorEvents> {
         }
 
         const dev = new Device(this.broker, 'lime/devices/' + deviceId, deviceId, meta)
-        if (this.caCertPem) {
-            const stream = (client.mqtt as any)?.stream
-            dev.peerCert = peerCertificateInfo(stream, this.caCertPem)
-            dev.serverCert = serverCertificateInfo(stream, this.caCertPem)
-            log(
-                'status',
-                deviceId,
-                dev.peerCert
-                    ? `peer certificate issued by ${dev.peerCert.issuer} (${dev.peerCert.ours ? 'adopted by this server' : 'LG-issued, redirected'})`
-                    : 'no peer certificate presented',
-            )
-        }
         client.deviceObj = dev
         this.emit('newDevice', dev)
     }
