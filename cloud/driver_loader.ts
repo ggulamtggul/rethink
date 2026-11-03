@@ -26,7 +26,7 @@
 // - external drivers take precedence over built-in ones for the same model;
 //   the shadowing is logged at load time.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
@@ -41,10 +41,13 @@ export type DriverFactory = new (HA: Connection, thinq: any, metadata: Metadata)
 export interface LoadedDrivers {
     thinq1: Map<string, DriverFactory>
     thinq2: Map<string, DriverFactory>
+    // modelId -> file that provided it, so the hot-reload watcher can tell a
+    // file that failed to load apart from a driver that was edited or removed.
+    sources: Map<string, string>
 }
 
 export function emptyDrivers(): LoadedDrivers {
-    return { thinq1: new Map(), thinq2: new Map() }
+    return { thinq1: new Map(), thinq2: new Map(), sources: new Map() }
 }
 
 let hookRegistered = false
@@ -125,6 +128,7 @@ export async function loadExternalDrivers(
                     continue
                 }
                 registry.set(model, mod.default)
+                loaded.sources.set(model, file)
                 if (builtinModels.includes(model))
                     log('status', `external driver ${file} (${hash}) shadows the built-in driver for ${model}`)
             }
@@ -147,4 +151,81 @@ export async function loadExternalDrivers(
             `${loaded.thinq1.size + loaded.thinq2.size} model(s) registered, ${failures} failure(s)`,
     )
     return loaded
+}
+
+// Hot reload: watch the drivers folder and hand each fresh registry to
+// `onReload`. Only .js changes trigger - the folder also holds driver data
+// files (energy counters and the like) that change all the time. Reloads are
+// debounced and serialized. Because the loader re-imports a changed file
+// under a new class identity while an unchanged file keeps its identity, the
+// bridge can swap exactly the drivers that changed and leave the rest - and
+// every appliance connection - alone. A file that now fails to load keeps
+// its previous driver (seeded from `initial`); a file that was deleted or
+// edited to drop a model unregisters that model as usual. Returns undefined
+// when there is nothing to watch.
+export function watchExternalDrivers(
+    dir: string | undefined,
+    builtin: { thinq1: string[]; thinq2: string[] },
+    initial: LoadedDrivers,
+    onReload: (loaded: LoadedDrivers) => void,
+): FSWatcher | undefined {
+    if (!dir) return undefined
+    if (!existsSync(dir)) {
+        log('status', `drivers_dir ${dir} does not exist - hot reload not started`)
+        return undefined
+    }
+
+    let previous = initial
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let running = false
+    let pending = false
+    const reload = async () => {
+        if (running) {
+            pending = true
+            return
+        }
+        running = true
+        try {
+            const loaded = await loadExternalDrivers(dir, builtin)
+            // Carry over the previous driver for any model whose file is
+            // still there but produced nothing this time: it failed to load.
+            const loadedFiles = new Set(loaded.sources.values())
+            for (const [model, file] of previous.sources) {
+                if (loaded.thinq1.has(model) || loaded.thinq2.has(model)) continue
+                if (loadedFiles.has(file) || !existsSync(join(dir, file))) continue
+                const factory = previous.thinq1.get(model) ?? previous.thinq2.get(model)
+                if (!factory) continue
+                ;(previous.thinq1.has(model) ? loaded.thinq1 : loaded.thinq2).set(model, factory)
+                loaded.sources.set(model, file)
+                log('status', `hot reload: keeping the previous driver for ${model} (${file} failed to load)`)
+            }
+            previous = loaded
+            onReload(loaded)
+        } catch (err) {
+            log(
+                'status',
+                `external driver reload failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+        }
+        running = false
+        if (pending) {
+            pending = false
+            void reload()
+        }
+    }
+
+    const watcher = watch(dir, { persistent: false }, (_event, filename) => {
+        if (filename && !filename.endsWith('.js')) return
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => {
+            timer = undefined
+            void reload()
+        }, 1000)
+        timer.unref()
+    })
+    watcher.on('error', (err) => {
+        log('status', `external driver watch error: ${err.message}`)
+    })
+    log('status', `external driver hot reload: watching ${dir}`)
+    return watcher
 }

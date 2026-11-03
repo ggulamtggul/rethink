@@ -14,7 +14,7 @@ import { DeviceAcceptor as T1Acceptor } from './cloud/thinq1/device'
 import { DeviceAcceptor as T2Acceptor } from './cloud/thinq2/device'
 import { Connection as HA_connection } from './cloud/homeassistant'
 import HA_bridge, { builtinDriverModels } from './cloud/ha_bridge'
-import { loadExternalDrivers } from './cloud/driver_loader'
+import { loadExternalDrivers, watchExternalDrivers } from './cloud/driver_loader'
 import { normalize as normalizeConfig, RawConfig, CA } from './util/config'
 import { loadHassioConfig } from './util/hassio'
 import { CertificateIssuer } from './util/sni'
@@ -182,6 +182,11 @@ function t2setup(manager: DeviceManager) {
 // HA connector
 const externalDrivers = await loadExternalDrivers(config.drivers_dir, builtinDriverModels)
 const ha = new HA_bridge(new HA_connection(config.homeassistant), externalDrivers)
+// Driver files dropped into drivers_dir later are picked up live: the bridge
+// swaps the affected driver instances without dropping appliance connections.
+watchExternalDrivers(config.drivers_dir, builtinDriverModels, externalDrivers, (loaded) =>
+    ha.setExternalDrivers(loaded),
+)
 const manager = new DeviceManager()
 manager.on('newDevice', (dev) => ha.newDevice(dev))
 

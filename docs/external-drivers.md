@@ -15,7 +15,24 @@ Add one line to `config.jsonc`:
 ```
 
 Relative paths resolve against the folder holding the config file. The
-folder is scanned once at startup; restart the server to pick up changes.
+folder is scanned at startup and then watched: see *Hot reload* below.
+
+## Hot reload
+
+While the server runs, changes to `.js` files in `drivers_dir` are picked
+up automatically (debounced by a second) - no restart, and no appliance
+reconnects. Only the drivers whose file actually changed are swapped: the
+running driver instance for each connected appliance of that model is
+dropped and rebuilt on the same connection, and its subscriptions on the
+connection are removed so the old instance goes quiet. A driver dropped
+into the folder for an appliance that is already connected (and previously
+had no driver) is attached live; deleting a file detaches its driver.
+
+Failure behaviour mirrors startup loading: a file that fails to load keeps
+its previously loaded driver running (the failure is logged), so a broken
+edit never takes a working appliance down. Files that are not `.js` -
+drivers keep their own data files, such as energy counters, in the same
+folder - never trigger a reload.
 
 ## The driver contract
 
@@ -63,7 +80,8 @@ next to the driver. Type checking is separate:
 npx tsc -p examples/external-drivers/tsconfig.json   # noEmit check for the example folder
 ```
 
-Then copy the resulting `.js` into `drivers_dir` and restart.
+Then copy the resulting `.js` into `drivers_dir`. A running server picks
+it up by itself (see *Hot reload* above).
 
 ## Precedence and failure behaviour
 

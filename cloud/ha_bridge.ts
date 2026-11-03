@@ -27,7 +27,8 @@ import { type Connection } from './homeassistant'
 import HADevice from './devices/base'
 import { type Metadata } from './thinq'
 import { AnyDevice } from './devmgr'
-import { type LoadedDrivers } from './driver_loader'
+import { type DriverFactory, type LoadedDrivers } from './driver_loader'
+import log from '../util/logging'
 
 type T1Factory = new (HA: Connection, thinq: T1Device, metadata: Metadata) => HADevice
 type T2Factory = new (HA: Connection, thinq: T2Device, metadata: Metadata) => HADevice
@@ -71,8 +72,54 @@ export const builtinDriverModels = {
     thinq2: Object.keys(t2deviceTypes),
 }
 
+// A connected appliance the bridge keeps track of, so a hot-reloaded external
+// driver can be swapped in without the appliance reconnecting. `factory` is
+// the class the live instance was built from (undefined while the model has
+// no driver); `listeners` snapshots the thinq device's event listeners from
+// before that instance was constructed, so the instance's own subscriptions
+// can be removed again when it is replaced - drivers subscribe with anonymous
+// closures and do not unsubscribe in drop().
+type TrackedDevice = {
+    thinqdev: AnyDevice
+    factory?: DriverFactory
+    listeners?: Map<string, Set<unknown>>
+}
+
+function snapshotListeners(thinqdev: AnyDevice): Map<string, Set<unknown>> {
+    const snap = new Map<string, Set<unknown>>()
+    const dev = thinqdev as unknown as {
+        eventNames?: () => (string | symbol)[]
+        listeners?: (event: string | symbol) => unknown[]
+    }
+    if (typeof dev.eventNames !== 'function' || typeof dev.listeners !== 'function') return snap
+    for (const event of dev.eventNames()) snap.set(String(event), new Set(dev.listeners(event)))
+    return snap
+}
+
+function detachInstanceListeners(thinqdev: AnyDevice, before?: Map<string, Set<unknown>>) {
+    if (!before) return
+    const dev = thinqdev as unknown as {
+        eventNames?: () => (string | symbol)[]
+        listeners?: (event: string | symbol) => unknown[]
+        removeListener?: (event: string | symbol, fn: never) => void
+    }
+    if (
+        typeof dev.eventNames !== 'function' ||
+        typeof dev.listeners !== 'function' ||
+        typeof dev.removeListener !== 'function'
+    )
+        return
+    for (const event of dev.eventNames()) {
+        const keep = before.get(String(event))
+        for (const fn of dev.listeners(event)) {
+            if (!keep?.has(fn)) dev.removeListener(event, fn as never)
+        }
+    }
+}
+
 class Bridge {
     haDevices = new Map<string, HADevice>()
+    private tracked = new Map<string, TrackedDevice>()
     constructor(
         readonly HA: Connection,
         private external?: LoadedDrivers,
@@ -86,36 +133,39 @@ class Bridge {
         })
     }
 
-    newDevice(thinqdev: AnyDevice) {
+    // External drivers (drivers_dir) win over the built-in registry.
+    private resolveFactory(thinqdev: AnyDevice): DriverFactory | undefined {
         const meta = thinqdev.meta
-        const oldDevice = this.haDevices.get(thinqdev.id)
-        if (oldDevice) oldDevice.drop()
+        if (thinqdev.platform === 'thinq1')
+            return this.external?.thinq1.get(meta.modelId) ?? (t1deviceTypes[meta.modelId] as DriverFactory)
+        if (thinqdev.platform === 'thinq2')
+            return this.external?.thinq2.get(meta.modelId) ?? (t2deviceTypes[meta.modelId] as DriverFactory)
+        return undefined
+    }
 
-        let hadevice: HADevice | undefined
-
-        // External drivers (drivers_dir) win over the built-in registry.
-        try {
-            if (thinqdev.platform === 'thinq1') {
-                const devclass = this.external?.thinq1.get(meta.modelId) ?? t1deviceTypes[meta.modelId]
-                if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
-            } else if (thinqdev.platform === 'thinq2') {
-                const devclass = this.external?.thinq2.get(meta.modelId) ?? t2deviceTypes[meta.modelId]
-                if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
-            }
-        } catch (err) {
-            // A driver that throws while being constructed must not take the
-            // device (or the server) down with it: carry on without one.
-            console.error(`driver for ${meta.modelId} failed to start:`, err)
-            return
-        }
-
-        if (!hadevice) {
+    private attach(tracked: TrackedDevice) {
+        const { thinqdev } = tracked
+        const meta = thinqdev.meta
+        const devclass = this.resolveFactory(thinqdev)
+        if (!devclass) {
             console.warn(`${thinqdev.platform} device type ${meta.modelId} unknown`)
             return
         }
 
+        let hadevice: HADevice
+        tracked.listeners = snapshotListeners(thinqdev)
+        try {
+            hadevice = new devclass(this.HA, thinqdev, meta)
+        } catch (err) {
+            // A driver that throws while being constructed must not take the
+            // device (or the server) down with it: carry on without one.
+            console.error(`driver for ${meta.modelId} failed to start:`, err)
+            detachInstanceListeners(thinqdev, tracked.listeners)
+            tracked.listeners = undefined
+            return
+        }
+        tracked.factory = devclass
         this.haDevices.set(thinqdev.id, hadevice)
-        thinqdev.on('close', () => this.dropDevice(hadevice))
 
         // hadevice.publishConfig() not needed anymore, will usually happen in the devclass constructor - or later
         try {
@@ -126,11 +176,75 @@ class Bridge {
         }
     }
 
-    dropDevice(ha: HADevice) {
-        if (this.haDevices.get(ha.id) === ha) {
-            this.haDevices.delete(ha.id)
-            ha.drop()
+    private removeInstance(id: string) {
+        const ha = this.haDevices.get(id)
+        if (!ha) return
+        this.haDevices.delete(id)
+        const tracked = this.tracked.get(id)
+        if (tracked) {
+            detachInstanceListeners(tracked.thinqdev, tracked.listeners)
+            tracked.factory = undefined
+            tracked.listeners = undefined
         }
+        ha.drop()
+    }
+
+    newDevice(thinqdev: AnyDevice) {
+        const previous = this.tracked.get(thinqdev.id)
+        if (previous && previous.thinqdev !== thinqdev) {
+            // Reconnect on a fresh connection object: the old instance's
+            // listeners live on the dead object, only its HA side needs the drop.
+            const old = this.haDevices.get(thinqdev.id)
+            if (old) {
+                this.haDevices.delete(thinqdev.id)
+                old.drop()
+            }
+        } else if (previous) {
+            this.removeInstance(thinqdev.id)
+        }
+
+        const tracked: TrackedDevice = { thinqdev }
+        this.tracked.set(thinqdev.id, tracked)
+        thinqdev.on('close', () => {
+            if (this.tracked.get(thinqdev.id)?.thinqdev !== thinqdev) return
+            this.tracked.delete(thinqdev.id)
+            this.removeInstance(thinqdev.id)
+        })
+        this.attach(tracked)
+    }
+
+    // Swap in a freshly loaded external driver registry (hot reload). The
+    // loader re-imports changed files under a new class identity while
+    // unchanged files keep theirs, so a reference comparison per live device
+    // picks out exactly the drivers that changed: those instances are rebuilt
+    // on the same connection, devices that gain a driver are attached, and
+    // devices whose driver vanished are detached. Nothing here touches the
+    // appliance connections themselves.
+    setExternalDrivers(next: LoadedDrivers) {
+        this.external = next
+        for (const tracked of this.tracked.values()) {
+            const factory = this.resolveFactory(tracked.thinqdev)
+            if (factory === tracked.factory) continue
+            const had = this.haDevices.has(tracked.thinqdev.id)
+            if (had) this.removeInstance(tracked.thinqdev.id)
+            if (factory) {
+                this.attach(tracked)
+                if (this.haDevices.has(tracked.thinqdev.id))
+                    log(
+                        'status',
+                        `hot reload: ${tracked.thinqdev.meta.modelId} (${tracked.thinqdev.id}) driver ${had ? 'swapped' : 'attached'}`,
+                    )
+            } else if (had) {
+                log(
+                    'status',
+                    `hot reload: ${tracked.thinqdev.meta.modelId} (${tracked.thinqdev.id}) driver removed`,
+                )
+            }
+        }
+    }
+
+    dropDevice(ha: HADevice) {
+        if (this.haDevices.get(ha.id) === ha) this.removeInstance(ha.id)
     }
 }
 
