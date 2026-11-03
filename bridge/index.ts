@@ -109,12 +109,20 @@ class BridgedDevice {
 type BridgeEvents = {
     loggedIn: () => void
     loggedOut: () => void
+    namesChanged: () => void
     started: (id: string) => void
     stopped: (id: string) => void
 }
 
 export class Bridge extends TypedEmitter<BridgeEvents> {
     bridgedDevices = new Map<string, BridgedDevice>()
+
+    /*
+     * What the owner calls each appliance, from the ThinQ account - the same names the app shows.
+     * Ported from upstream rethink: rethink itself only knows a device by its id and model, which
+     * is useless for telling appliances apart in the management panel.
+     */
+    deviceNames = new Map<string, string>()
 
     constructor(
         readonly state: BridgeState,
@@ -124,6 +132,42 @@ export class Bridge extends TypedEmitter<BridgeEvents> {
         this.manager.on('newDevice', this.#start.bind(this))
         this.manager.on('dropDevice', this.#stop.bind(this))
         Object.values(this.manager.allDevices).forEach(this.#start.bind(this))
+    }
+
+    name(id: string) {
+        return this.deviceNames.get(id)
+    }
+
+    /*
+     * Best-effort: the panel is perfectly usable without the names, so a cloud that will not answer
+     * costs a log line and nothing else. Logging out takes the same path - no credentials, no names.
+     */
+    async refreshNames(client?: ThinqClient) {
+        const creds = this.state.getCredentials()
+        if (!creds) return this.clearNames()
+
+        try {
+            if (!client) {
+                client = new ThinqClient(creds.env)
+                await client.auth(creds.refreshToken)
+            }
+
+            const devices = await client.listDevices()
+
+            // race against login/logout lost
+            if (this.state.getCredentials()?.refreshToken !== creds.refreshToken) return
+
+            this.deviceNames = new Map(devices.filter((dev) => dev.alias).map((dev) => [dev.deviceId, dev.alias]))
+            this.emit('namesChanged')
+        } catch (err) {
+            console.warn('Could not read the device names from the ThinQ account:', err)
+        }
+    }
+
+    clearNames() {
+        if (this.deviceNames.size === 0) return
+        this.deviceNames = new Map()
+        this.emit('namesChanged')
     }
 
     #start(dev: AnyDevice) {
@@ -197,6 +241,7 @@ export class Bridge extends TypedEmitter<BridgeEvents> {
                 env,
                 refreshToken: token.refreshToken,
             })
+            void this.refreshNames()
             this.emit('loggedIn')
             return true
         } catch (err) {
@@ -207,6 +252,7 @@ export class Bridge extends TypedEmitter<BridgeEvents> {
     logout() {
         this.state.setCredentials(undefined)
         // FIXME? drop all devices
+        this.clearNames() // with the credentials gone, this clears the names
         this.emit('loggedOut')
     }
 
@@ -268,6 +314,7 @@ export class Bridge extends TypedEmitter<BridgeEvents> {
         statusCallback('Device registered successfully')
 
         this.state.setDeviceState(device.id, clientDevice.state)
+        void this.refreshNames(client) // registering may have just given this appliance its name
         return clientDevice
     }
 

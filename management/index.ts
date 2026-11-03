@@ -33,10 +33,25 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
     })
     app.use(WebSocketExpress.json())
 
+    // Device names live in the ThinQ account, not on the appliances. Refresh them when someone is
+    // actually looking at the panel, at most once a minute, and keep them fresh while it stays open.
+    let lastNamesRefresh = 0
+    let refreshNamesTimer: ReturnType<typeof setInterval> | undefined
+
+    function maybeRefreshNames() {
+        if (!bridge) return
+        const now = Date.now()
+        if (now - lastNamesRefresh < 60_000) return
+        lastNamesRefresh = now
+        void bridge.refreshNames()
+    }
+
     const currentDir = path.dirname(fileURLToPath(import.meta.url))
     app.ws('/ws', (req, res, next) => {
         res.accept().then((ws) => {
             subscribers.push(ws)
+            maybeRefreshNames()
+            if (!refreshNamesTimer) refreshNamesTimer = setInterval(maybeRefreshNames, 15 * 60_000)
 
             ws.send(
                 JSON.stringify({
@@ -50,6 +65,10 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
 
             ws.on('close', () => {
                 subscribers = subscribers.filter((el) => el !== ws)
+                if (subscribers.length === 0 && refreshNamesTimer) {
+                    clearInterval(refreshNamesTimer)
+                    refreshNamesTimer = undefined
+                }
             })
         }, next)
     })
@@ -64,6 +83,8 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
             const dev = manager.allDevices[id]
             const meta = dev.meta
             allDevices[id] = {
+                // What the owner calls it, when the bridge has been able to ask the account
+                name: bridge ? bridge.name(id) : undefined,
                 model: meta.modelId,
                 deviceType: meta.deviceType,
                 platform: dev.platform,
@@ -145,6 +166,7 @@ export function app(ha: HA_bridge, manager: DeviceManager, bridge: Bridge | unde
         bridge.on('loggedOut', refreshBridgeStatus)
         bridge.on('started', refreshDevices)
         bridge.on('stopped', refreshDevices)
+        bridge.on('namesChanged', refreshDevices)
     }
 
     function bridgeStatus() {

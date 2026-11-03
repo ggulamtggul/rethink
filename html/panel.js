@@ -56,7 +56,19 @@ class DeviceEntry {
 
         let td
         td = document.createElement('td')
-        td.innerText = this.id
+        if (this.remoteState.name) {
+            // The owner's own name for the appliance, which only the bridge can know. The id stays
+            // visible underneath - the monitor page and the logs still refer to devices by it.
+            const nameDiv = document.createElement('div')
+            nameDiv.innerText = this.remoteState.name
+            const idDiv = document.createElement('div')
+            idDiv.innerText = this.id
+            idDiv.style = 'font-size: 0.75em; opacity: 0.6'
+            td.appendChild(nameDiv)
+            td.appendChild(idDiv)
+        } else {
+            td.innerText = this.id
+        }
         children.push(td)
 
         td = document.createElement('td')
