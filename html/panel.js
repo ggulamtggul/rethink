@@ -80,7 +80,22 @@ class DeviceEntry {
         children.push(td)
 
         td = document.createElement('td')
-        td.innerText = this.remoteState.platform
+        const platformDiv = document.createElement('div')
+        platformDiv.innerText = this.remoteState.platform
+        td.appendChild(platformDiv)
+        // How this device is attached, from the certificate it presented: issued by this
+        // server (adopted) or by LG (only redirected here). Shown in Korean - the panel's
+        // owner reads that, and the tooltip carries the detail either way.
+        const certDiv = document.createElement('div')
+        certDiv.style = 'font-size: 0.75em; opacity: 0.75'
+        if (this.remoteState.peerCert) {
+            certDiv.innerText = this.remoteState.peerCert.ours ? '채택' : '가로채기'
+            certDiv.title = `Certificate issued by ${this.remoteState.peerCert.issuer}`
+        } else {
+            certDiv.innerText = '방식 미확인'
+            certDiv.title = 'No client certificate was presented on this connection'
+        }
+        td.appendChild(certDiv)
         children.push(td)
 
         td = document.createElement('td')
