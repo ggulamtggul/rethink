@@ -259,6 +259,18 @@ export class Client {
         } catch (err) {
             if (err instanceof RemoteError && err.resultCode === ErrorCodes.ERROR_ALREADY_DEVICES_REGISTERED_IN_HOME) {
                 console.log('Device already registered, keeping the existing registration')
+            } else if (err instanceof RemoteError && err.resultCode === '0005') {
+                // LG also refuses the add with 0005 when the device is already in the
+                // account (seen on the washtower pair, 2026-11-03; rusthinq rc1 reads the
+                // same code the same way). Accept it only when the device really is
+                // registered - ask the cloud for its status and keep the registration
+                // when that answers. Otherwise the refusal stands.
+                try {
+                    await this.getDeviceStatus(device.deviceId)
+                    console.log('Device add refused with 0005 but the device is registered, keeping the existing registration')
+                } catch {
+                    throw err
+                }
             } else {
                 throw err
             }
