@@ -61,7 +61,7 @@ export interface ServerCertInfo {
 export function serverCertificateInfo(socket: unknown, caCertPem: string): ServerCertInfo | undefined {
     const s = socket as TLSSocket | undefined
     if (!s) return undefined
-    const name = s.servername
+    const name = (s as unknown as { servername?: string }).servername
     if (!name) return undefined
     try {
         return { name, issuer: new X509Certificate(caCertPem).subject }
