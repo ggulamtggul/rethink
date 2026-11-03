@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": { "noEmit": true, "paths": { "@/*": ["../../*"], "rethink/*": ["../../*"] } },
+  "extends": "../../tsconfig.json",
+  "include": ["./*.ts", "../../types/**/*.d.ts"]
+}

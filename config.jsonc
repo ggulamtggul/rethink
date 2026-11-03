@@ -8,6 +8,11 @@
   // Leave it off for appliances set up over SoftAP - they have no redirection to carry them here.
   // "advertise_requested_host": false,
 
+  // External device drivers: compiled ESM .js files in this folder are loaded at startup and
+  // take precedence over the built-in driver for any model they declare. Relative paths are
+  // resolved against the folder holding this config file. See docs/external-drivers.md.
+  // "drivers_dir": "./drivers",
+
   "homeassistant": {
     "mqtt_url": "mqtt://localhost:1883",
     "discovery_prefix": "homeassistant", // corresponds to discovery_prefix in homeassistant config

@@ -27,6 +27,7 @@ import { type Connection } from './homeassistant'
 import HADevice from './devices/base'
 import { type Metadata } from './thinq'
 import { AnyDevice } from './devmgr'
+import { type LoadedDrivers } from './driver_loader'
 
 type T1Factory = new (HA: Connection, thinq: T1Device, metadata: Metadata) => HADevice
 type T2Factory = new (HA: Connection, thinq: T2Device, metadata: Metadata) => HADevice
@@ -63,9 +64,19 @@ const t2deviceTypes: Record<string, T2Factory> = {
     DHUM_231006_WW, // LG dehumidifier sold in Korea (deviceType 403, TLV state frames marked 0xa7)
 }
 
+// Model lists of the statically registered drivers, so the external driver
+// loader can report which built-ins an external driver shadows.
+export const builtinDriverModels = {
+    thinq1: Object.keys(t1deviceTypes),
+    thinq2: Object.keys(t2deviceTypes),
+}
+
 class Bridge {
     haDevices = new Map<string, HADevice>()
-    constructor(readonly HA: Connection) {
+    constructor(
+        readonly HA: Connection,
+        private external?: LoadedDrivers,
+    ) {
         HA.on('discovery', () => {
             this.haDevices.forEach((ha) => ha.publishConfig())
         })
@@ -82,12 +93,20 @@ class Bridge {
 
         let hadevice: HADevice | undefined
 
-        if (thinqdev.platform === 'thinq1') {
-            const devclass = t1deviceTypes[meta.modelId]
-            if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
-        } else if (thinqdev.platform === 'thinq2') {
-            const devclass = t2deviceTypes[meta.modelId]
-            if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
+        // External drivers (drivers_dir) win over the built-in registry.
+        try {
+            if (thinqdev.platform === 'thinq1') {
+                const devclass = this.external?.thinq1.get(meta.modelId) ?? t1deviceTypes[meta.modelId]
+                if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
+            } else if (thinqdev.platform === 'thinq2') {
+                const devclass = this.external?.thinq2.get(meta.modelId) ?? t2deviceTypes[meta.modelId]
+                if (devclass) hadevice = new devclass(this.HA, thinqdev, meta)
+            }
+        } catch (err) {
+            // A driver that throws while being constructed must not take the
+            // device (or the server) down with it: carry on without one.
+            console.error(`driver for ${meta.modelId} failed to start:`, err)
+            return
         }
 
         if (!hadevice) {
@@ -99,7 +118,12 @@ class Bridge {
         thinqdev.on('close', () => this.dropDevice(hadevice))
 
         // hadevice.publishConfig() not needed anymore, will usually happen in the devclass constructor - or later
-        hadevice.start()
+        try {
+            hadevice.start()
+        } catch (err) {
+            console.error(`driver for ${meta.modelId} failed in start():`, err)
+            this.dropDevice(hadevice)
+        }
     }
 
     dropDevice(ha: HADevice) {

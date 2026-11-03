@@ -1,6 +1,7 @@
 export type RawConfig = {
     hostname: string
     advertise_requested_host?: boolean
+    drivers_dir?: string
     homeassistant: HAConfig
     ca_key_file: string
     ca_cert_file: string
@@ -20,6 +21,7 @@ export type RawConfig = {
 export type Config = {
     hostname: string
     advertise_requested_host: boolean
+    drivers_dir?: string
     homeassistant: HAConfig
     ca_key_file: string
     ca_cert_file: string

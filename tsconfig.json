@@ -9,7 +9,7 @@
     "lib": ["es2021"],
     "target": "es2021",
 
-    "paths": { "@/*": ["./*"] },
+    "paths": { "@/*": ["./*"], "rethink/*": ["./*"] },
 
     "strict": true,
     "noUncheckedSideEffectImports": true,

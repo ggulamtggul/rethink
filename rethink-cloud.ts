@@ -13,7 +13,8 @@ import { routes as thinq2Routes } from './cloud/thinq2/provisioning'
 import { DeviceAcceptor as T1Acceptor } from './cloud/thinq1/device'
 import { DeviceAcceptor as T2Acceptor } from './cloud/thinq2/device'
 import { Connection as HA_connection } from './cloud/homeassistant'
-import HA_bridge from './cloud/ha_bridge'
+import HA_bridge, { builtinDriverModels } from './cloud/ha_bridge'
+import { loadExternalDrivers } from './cloud/driver_loader'
 import { normalize as normalizeConfig, RawConfig, CA } from './util/config'
 import { CertificateIssuer } from './util/sni'
 import * as Management from './management'
@@ -30,6 +31,7 @@ const config = normalizeConfig(JSON.parse(stripJsonComments(readFileSync(configP
 config.ca_key_file = resolve(configDir, config.ca_key_file)
 config.ca_cert_file = resolve(configDir, config.ca_cert_file)
 if (config.bridge) config.bridge.storage_path = resolve(configDir, config.bridge.storage_path)
+if (config.drivers_dir) config.drivers_dir = resolve(configDir, config.drivers_dir)
 
 if (!config.log) config.log = ['status', 'incoming', 'HTTPS']
 
@@ -139,7 +141,8 @@ function t2setup(manager: DeviceManager) {
 }
 
 // HA connector
-const ha = new HA_bridge(new HA_connection(config.homeassistant))
+const externalDrivers = await loadExternalDrivers(config.drivers_dir, builtinDriverModels)
+const ha = new HA_bridge(new HA_connection(config.homeassistant), externalDrivers)
 const manager = new DeviceManager()
 manager.on('newDevice', (dev) => ha.newDevice(dev))
 
