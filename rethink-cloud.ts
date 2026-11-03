@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path'
 import { Broker } from './cloud/mqtt-broker'
 import * as tls from 'node:tls'
 import * as net from 'node:net'
-import { X509Certificate } from 'node:crypto'
+import { createPrivateKey, X509Certificate } from 'node:crypto'
 import { routes as thinq1Routes } from './cloud/thinq1/http'
 import { routes as thinq2Routes } from './cloud/thinq2/provisioning'
 import { DeviceAcceptor as T1Acceptor } from './cloud/thinq1/device'
@@ -16,6 +16,7 @@ import { Connection as HA_connection } from './cloud/homeassistant'
 import HA_bridge, { builtinDriverModels } from './cloud/ha_bridge'
 import { loadExternalDrivers } from './cloud/driver_loader'
 import { normalize as normalizeConfig, RawConfig, CA } from './util/config'
+import { loadHassioConfig } from './util/hassio'
 import { CertificateIssuer } from './util/sni'
 import * as Management from './management'
 
@@ -24,9 +25,24 @@ import { DeviceManager } from './cloud/devmgr'
 import { Bridge } from './bridge'
 import { JSONStorage } from './bridge/state'
 
-const configPath = resolve(process.argv[2] ?? './config.json')
-const configDir = dirname(configPath)
-const config = normalizeConfig(JSON.parse(stripJsonComments(readFileSync(configPath).toString('utf-8'))) as RawConfig)
+// Set by the Home Assistant add-on manifest: the Supervisor options file to configure from,
+// and the directory to keep the CA and the bridge state in. Absent everywhere else.
+const hassioOptions = process.env.RETHINK_HASSIO_OPTIONS
+
+let rawConfig: RawConfig
+let configDir: string
+if (hassioOptions) {
+    const dataDir = process.env.RETHINK_DATA_DIR
+    if (!dataDir) throw new Error('RETHINK_DATA_DIR must be set together with RETHINK_HASSIO_OPTIONS')
+    configDir = resolve(dataDir)
+    log('status', `Home Assistant add-on mode, loading options from ${hassioOptions}`)
+    rawConfig = await loadHassioConfig(configDir, hassioOptions)
+} else {
+    const configPath = resolve(process.argv[2] ?? './config.json')
+    configDir = dirname(configPath)
+    rawConfig = JSON.parse(stripJsonComments(readFileSync(configPath).toString('utf-8'))) as RawConfig
+}
+const config = normalizeConfig(rawConfig)
 
 config.ca_key_file = resolve(configDir, config.ca_key_file)
 config.ca_cert_file = resolve(configDir, config.ca_cert_file)
@@ -43,34 +59,54 @@ setLogFilter((topic) => {
 // if you add spaces here, you will have to fix quoting in the code below
 // the CA is also the server
 function loadOrCreateCert(): CA {
-    let keypem: string, certpem: string
+    let keypem: string | undefined, certpem: string | undefined
     try {
         keypem = readFileSync(config.ca_key_file).toString('utf-8')
-        certpem = readFileSync(config.ca_cert_file).toString('utf-8')
-
-        if (!new X509Certificate(certpem).checkHost(config.hostname))
-            throw new Error('invalid subject, creating new certificate')
     } catch (err) {
-        log('status', 'Creating a new key/certificate for the CA')
-        spawnSync('openssl', [
-            'req',
-            '-x509',
-            '-newkey',
-            'rsa:4096',
-            '-keyout',
-            config.ca_key_file,
-            '-out',
-            config.ca_cert_file,
-            '-sha256',
-            '-days',
-            '3650',
-            '-nodes',
-            '-subj',
-            '/CN=' + config.hostname,
-        ])
-        keypem = readFileSync(config.ca_key_file).toString('utf-8')
-        certpem = readFileSync(config.ca_cert_file).toString('utf-8')
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
     }
+    try {
+        certpem = readFileSync(config.ca_cert_file).toString('utf-8')
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+
+    if (keypem !== undefined && certpem !== undefined) {
+        // An existing CA is used as-is, whatever name it carries: appliances provisioned
+        // so far have this exact CA pinned, so silently issuing a new one because its
+        // subject is not config.hostname (an upstream CA is `CN=Rethink CA`, with no SAN)
+        // would cut every one of them off. The per-name leaves in util/sni.ts are what
+        // appliances actually see as server certificates.
+        const cert = new X509Certificate(certpem)
+        if (!cert.checkPrivateKey(createPrivateKey(keypem)))
+            throw new Error('the CA private key does not belong to the CA certificate')
+        return { key: keypem, cert: certpem }
+    }
+
+    if (keypem !== undefined || certpem !== undefined)
+        throw new Error(
+            `only one of ${config.ca_key_file} and ${config.ca_cert_file} exists; refusing to replace the CA`,
+        )
+
+    log('status', 'Creating a new key/certificate for the CA')
+    spawnSync('openssl', [
+        'req',
+        '-x509',
+        '-newkey',
+        'rsa:4096',
+        '-keyout',
+        config.ca_key_file,
+        '-out',
+        config.ca_cert_file,
+        '-sha256',
+        '-days',
+        '3650',
+        '-nodes',
+        '-subj',
+        '/CN=' + config.hostname,
+    ])
+    keypem = readFileSync(config.ca_key_file).toString('utf-8')
+    certpem = readFileSync(config.ca_cert_file).toString('utf-8')
 
     return { key: keypem, cert: certpem }
 }
